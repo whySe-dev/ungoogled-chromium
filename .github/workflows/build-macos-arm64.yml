@@ -1,0 +1,100 @@
+name: Build ungoogled-chromium macOS ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Chromium version (leave empty for latest)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    name: Build for macOS ARM64
+    runs-on: self-hosted
+    timeout-minutes: 1440
+
+    steps:
+      - name: Checkout ungoogled-chromium
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: System info
+        run: |
+          echo "=== System Info ==="
+          uname -a
+          sysctl -n machdep.cpu.brand_string
+          df -h
+          echo "RAM: $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+
+      - name: Install dependencies
+        run: |
+          brew update || true
+          brew install ninja ccache python@3.11 wget coreutils || true
+          pip3 install --user httplib2 six
+
+      - name: Clone macOS build scripts
+        run: |
+          cd ${{ github.workspace }}/..
+          rm -rf ungoogled-chromium-macos || true
+          git clone --depth 1 https://github.com/nicoboss/ungoogled-chromium-macos.git
+          cd ungoogled-chromium-macos
+          
+          # Link our ungoogled-chromium checkout
+          rm -rf ungoogled-chromium || true
+          ln -s ${{ github.workspace }} ungoogled-chromium
+
+      - name: Download Chromium source
+        working-directory: ../ungoogled-chromium-macos
+        run: ./build.sh download
+
+      - name: Prepare source
+        working-directory: ../ungoogled-chromium-macos
+        run: |
+          ./build.sh unpack
+          ./build.sh prepare
+
+      - name: Configure lite build (automation)
+        working-directory: ../ungoogled-chromium-macos
+        run: |
+          cat >> src/out/Default/args.gn << 'EOF'
+          
+          # Lite build for automation
+          enable_nacl = false
+          enable_widevine = false
+          enable_hangout_services_extension = false
+          enable_remoting = false
+          enable_reporting = false
+          is_official_build = true
+          is_debug = false
+          symbol_level = 0
+          cc_wrapper = "ccache"
+          target_cpu = "arm64"
+          EOF
+
+      - name: Build
+        working-directory: ../ungoogled-chromium-macos
+        run: |
+          export PATH="/opt/homebrew/opt/ccache/libexec:$PATH"
+          export CCACHE_MAXSIZE="30G"
+          ./build.sh build
+
+      - name: Package
+        working-directory: ../ungoogled-chromium-macos
+        run: |
+          ./build.sh package
+          mkdir -p ${{ github.workspace }}/dist
+          cp out/*.dmg ${{ github.workspace }}/dist/ 2>/dev/null || true
+          
+          if [ -d "src/out/Default/Chromium.app" ]; then
+            cd src/out/Default
+            ditto -c -k --sequesterRsrc Chromium.app ${{ github.workspace }}/dist/ungoogled-chromium-arm64.zip
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ungoogled-chromium-macos-arm64
+          path: dist/*
+          retention-days: 90
