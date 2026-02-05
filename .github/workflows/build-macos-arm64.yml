@@ -8,6 +8,10 @@ on:
         required: false
         default: ''
 
+env:
+  # Force Python 3.11 (3.14 breaks depot_tools)
+  PATH: /opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
 jobs:
   build:
     name: Build for macOS ARM64
@@ -30,12 +34,26 @@ jobs:
 
       - name: Install dependencies
         run: |
+          export PATH="/opt/homebrew/bin:$PATH"
           brew update || true
           brew install ninja ccache python@3.11 wget coreutils || true
-          pip3 install --user httplib2 six
+          
+          # Force Python 3.11
+          brew link --overwrite python@3.11 || true
+
+      - name: Setup Python 3.11
+        run: |
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
+          echo "Python version:"
+          python3 --version
+          which python3
+          
+          # Install required packages
+          python3 -m pip install --user httplib2 six
 
       - name: Clone macOS build scripts
         run: |
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
           cd ${{ github.workspace }}/..
           rm -rf ungoogled-chromium-macos || true
           git clone --depth 1 https://github.com/ungoogled-software/ungoogled-chromium-macos.git
@@ -47,18 +65,22 @@ jobs:
 
       - name: Download Chromium source
         working-directory: ../ungoogled-chromium-macos
-        run: ./build.sh download
+        run: |
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
+          python3 --version
+          ./build.sh download
 
       - name: Prepare source
         working-directory: ../ungoogled-chromium-macos
         run: |
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
           ./build.sh unpack
           ./build.sh prepare
 
       - name: Configure lite build (automation)
         working-directory: ../ungoogled-chromium-macos
         run: |
-          cat >> src/out/Default/args.gn << 'EOF'
+          cat >> build/src/out/Default/args.gn << 'EOF'
           
           # Lite build for automation
           enable_nacl = false
@@ -76,19 +98,21 @@ jobs:
       - name: Build
         working-directory: ../ungoogled-chromium-macos
         run: |
-          export PATH="/opt/homebrew/opt/ccache/libexec:$PATH"
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/opt/ccache/libexec:/opt/homebrew/bin:$PATH"
           export CCACHE_MAXSIZE="30G"
           ./build.sh build
 
       - name: Package
         working-directory: ../ungoogled-chromium-macos
         run: |
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
           ./build.sh package
           mkdir -p ${{ github.workspace }}/dist
-          cp out/*.dmg ${{ github.workspace }}/dist/ 2>/dev/null || true
+          cp build/chromium-*.dmg ${{ github.workspace }}/dist/ 2>/dev/null || true
+          cp build/*.tar.xz ${{ github.workspace }}/dist/ 2>/dev/null || true
           
-          if [ -d "src/out/Default/Chromium.app" ]; then
-            cd src/out/Default
+          if [ -d "build/src/out/Default/Chromium.app" ]; then
+            cd build/src/out/Default
             ditto -c -k --sequesterRsrc Chromium.app ${{ github.workspace }}/dist/ungoogled-chromium-arm64.zip
           fi
 
