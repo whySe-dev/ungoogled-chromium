@@ -8,15 +8,15 @@ on:
         required: false
         default: ''
 
-env:
-  # Force Python 3.11 (3.14 breaks depot_tools)
-  PATH: /opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
-
 jobs:
   build:
     name: Build for macOS ARM64
     runs-on: self-hosted
     timeout-minutes: 1440
+
+    env:
+      # Force Python 3.11
+      PYTHON: /opt/homebrew/opt/python@3.11/libexec/bin/python3
 
     steps:
       - name: Checkout ungoogled-chromium
@@ -36,19 +36,18 @@ jobs:
         run: |
           export PATH="/opt/homebrew/bin:$PATH"
           brew update || true
-          brew install ninja ccache python@3.11 wget coreutils || true
+          brew install ninja ccache python@3.11 wget coreutils rustup || true
           
-          # Force Python 3.11
-          brew link --overwrite python@3.11 || true
+          # Setup Rust for ARM64 only
+          rustup-init -y --default-toolchain stable --target aarch64-apple-darwin
+          source ~/.cargo/env
+          rustup target add aarch64-apple-darwin
 
       - name: Setup Python 3.11
         run: |
           export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
           echo "Python version:"
           python3 --version
-          which python3
-          
-          # Install required packages
           python3 -m pip install --user httplib2 six
 
       - name: Clone macOS build scripts
@@ -67,7 +66,6 @@ jobs:
         working-directory: ../ungoogled-chromium-macos
         run: |
           export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
-          python3 --version
           ./build.sh download
 
       - name: Prepare source
@@ -77,10 +75,17 @@ jobs:
           ./build.sh unpack
           ./build.sh prepare
 
-      - name: Configure lite build (automation)
+      - name: Configure ARM64-only build
         working-directory: ../ungoogled-chromium-macos
         run: |
-          cat >> build/src/out/Default/args.gn << 'EOF'
+          # Override args.gn to force ARM64 only (no universal/x86_64)
+          cat > build/src/out/Default/args.gn << 'EOF'
+          # === ARM64-only build (no universal binary) ===
+          target_cpu = "arm64"
+          target_os = "mac"
+          
+          # Disable x86_64 cross-compile
+          use_lld = true
           
           # Lite build for automation
           enable_nacl = false
@@ -88,32 +93,55 @@ jobs:
           enable_hangout_services_extension = false
           enable_remoting = false
           enable_reporting = false
+          
+          # Official build optimizations
           is_official_build = true
           is_debug = false
           symbol_level = 0
+          blink_symbol_level = 0
+          
+          # ccache
           cc_wrapper = "ccache"
-          target_cpu = "arm64"
+          
+          # ungoogled-chromium flags
+          is_cfi = false
+          use_cfi_cast = false
+          use_thin_lto = true
+          chrome_pgo_phase = 0
           EOF
+          
+          echo "=== args.gn ==="
+          cat build/src/out/Default/args.gn
+
+      - name: Regenerate build files
+        working-directory: ../ungoogled-chromium-macos/build/src
+        run: |
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+          source ~/.cargo/env || true
+          ./out/Default/gn gen out/Default --fail-on-unused-args
 
       - name: Build
-        working-directory: ../ungoogled-chromium-macos
+        working-directory: ../ungoogled-chromium-macos/build/src
         run: |
-          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/opt/ccache/libexec:/opt/homebrew/bin:$PATH"
+          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/opt/ccache/libexec:/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
           export CCACHE_MAXSIZE="30G"
-          ./build.sh build
+          source ~/.cargo/env || true
+          
+          # Build Chromium
+          ninja -C out/Default chrome
 
       - name: Package
-        working-directory: ../ungoogled-chromium-macos
+        working-directory: ../ungoogled-chromium-macos/build/src
         run: |
-          export PATH="/opt/homebrew/opt/python@3.11/libexec/bin:/opt/homebrew/bin:$PATH"
-          ./build.sh package
           mkdir -p ${{ github.workspace }}/dist
-          cp build/chromium-*.dmg ${{ github.workspace }}/dist/ 2>/dev/null || true
-          cp build/*.tar.xz ${{ github.workspace }}/dist/ 2>/dev/null || true
           
-          if [ -d "build/src/out/Default/Chromium.app" ]; then
-            cd build/src/out/Default
+          if [ -d "out/Default/Chromium.app" ]; then
+            cd out/Default
             ditto -c -k --sequesterRsrc Chromium.app ${{ github.workspace }}/dist/ungoogled-chromium-arm64.zip
+            echo "✅ Package created!"
+          else
+            echo "❌ Chromium.app not found"
+            ls -la out/Default/
           fi
 
       - name: Upload artifact
