@@ -38,7 +38,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/..
           rm -rf ungoogled-chromium-macos || true
-          git clone --depth 1 https://github.com/nicoboss/ungoogled-chromium-macos.git
+          git clone --depth 1 https://github.com/ungoogled-software/ungoogled-chromium-macos.git
           cd ungoogled-chromium-macos
           
           # Link our ungoogled-chromium checkout
